@@ -1,0 +1,2 @@
+- ++train_iterations=3000
+- ++feedback_frequency=150

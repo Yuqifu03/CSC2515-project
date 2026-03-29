@@ -1,0 +1,6 @@
+- ++feedback_frequency=25
+- ++lr=0.1
+- ++train_iterations=1000
+- ++wandb_mode=disabled
+- ++wandb_name=test_run
+- ++wandb_gen_id=run1

@@ -1,0 +1,16 @@
+seed: 0
+wandb_name: debug
+wandb_mode: disabled
+game_name: MountainCar-v0
+llm_type: gpt-3.5-turbo
+eval_max_steps: 50
+cost_budget: 1
+lr: 0.1
+train_iterations: 500
+max_tokens: 500
+max_prompt_size: 3800
+max_episodes: 1000
+evaluate: false
+feedback_frequency: 50
+wandb_gen_id: mountain_car_llm_v1
+wandb_project: reward-shaping

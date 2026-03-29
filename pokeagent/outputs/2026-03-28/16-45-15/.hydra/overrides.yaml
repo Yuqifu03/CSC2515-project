@@ -1,0 +1,3 @@
+- +feedback_frequency=25
+- lr=0.1
+- train_iterations=1000
