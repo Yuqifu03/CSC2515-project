@@ -11,7 +11,7 @@ This project investigates the robustness and efficiency of reinforcement learnin
 
 We use a locally deployed language model for feedback generation:
 
-- Model: deepseek-coder-v2:16b
+- Model: ```deepseek-coder-v2:16b```
 
 ## Setup & Execution
 Before running the experiment, make sure you are logged into Weights & Biases:
