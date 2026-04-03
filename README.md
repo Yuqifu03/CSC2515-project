@@ -21,7 +21,5 @@ wandb login
 
 Then launch training with configurable parameters: 
 ```bash
-python pokeagent/local_llm_qlearn.py \
-  ++train_iterations=<num_iterations> \
-  ++feedback_frequency=<frequency>
+python pokeagent/local_llm_qlearn.py
 ```

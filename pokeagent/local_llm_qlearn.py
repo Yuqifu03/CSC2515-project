@@ -33,7 +33,7 @@ def main(cfg: DictConfig) -> None:
     # Study parameters
     test_frequencies = [50, 75, 100, 125, 150, 175, 200] 
     # num_seeds = 3  
-    seeds=[42]                        
+    seeds=[42, 100, 2026, 3030, 4040, 5050, 6060, 7070, 8080, 9999]                        
     episodes_per_run = 600
     
     # Data containers for the final local plot
