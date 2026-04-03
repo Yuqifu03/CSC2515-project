@@ -47,4 +47,4 @@ def query_gpt(prompt: str, model: str = "deepseek-coder-v2:16b"):
 
     except Exception as e:
         print(f"❌ LLM Query Failed: {e}")
-        return 0.0, ""
+        raise

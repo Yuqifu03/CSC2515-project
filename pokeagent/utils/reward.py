@@ -148,11 +148,15 @@
 #     sr.dump()
 #     print(reward(1, 2, 3))
 
-import utils.query_llm as query_llm
-from typing import List
 import os
-import logging
 import re
+import traceback
+import logging
+
+# Ensure this matches your existing import style
+import utils.query_llm as query_llm
+
+log = logging.getLogger(__name__)
 
 class ShapedReward(object):
     """
@@ -160,37 +164,28 @@ class ShapedReward(object):
     """
 
     def __init__(self, save_dir: str = "./logs"):
-        # --- MOUNTAINCAR SPECIFIC PROMPTS ---
         self.GOAL_PROMPT = """
-        [GOAL] You are an AI agent helping a car drive up a hill to reach a yellow flag. 
-        The environment is MountainCar-v0. The car is at the bottom of a valley and must build momentum 
-        by driving back and forth to reach the goal at position 0.5.
-
-        [HINT]: To reach 0.5, the car MUST build momentum by swinging. Encourage high velocity (abs(vel)) and reward the agent when the Total Energy (Height + Speed) increases. DO NOT penalize velocity.
+        [GOAL] You are an AI agent helping a car drive up a hill. 
+        Environment: MountainCar-v0. Target: Reach 0.5 position.
+        [HINT] Build momentum by swinging. Reward Total Energy (Potential + Kinetic).
         """
         
         self.PARAM_PROMPT = """
-        [PARAMS] pos (position), vel (velocity), action.
-        [PHYSICS] The car needs Mechanical Energy to climb. 
-        Energy = Potential Energy + Kinetic Energy.
-        Potential Energy is roughly: (pos + 0.5)^2
-        Kinetic Energy is: 0.5 * vel^2
-
-        [INSTRUCTION] Please create a reward function that provides a total value between -1.0 and +2.0. 
-        Make sure the reward for "building energy" (swinging) is significantly larger than the -1 penalty per step. 
-        Example: return (height_reward + velocity_reward) * scale
+        [PARAMS] pos, vel, action. 
+        [PHYSICS] Energy = (pos + 0.5)^2 + 0.5 * vel^2.
+        [CONSTRAINT] Action is 0, 1, or 2. Do NOT divide by 'action' directly (prevents ZeroDivisionError).
         """
 
+        # Added {error_info} placeholder to the trajectory prompt
         self.TRAJECTORY = """Your previous reward function was:
         {code}
         It resulted in a total episode reward of {reward}. 
-        Improve this function to help the car reach the goal faster!
+        {error_info}
+        Improve this function!
         """
 
-        self.PROMPT = """Only respond with the Python code for the function. 
-        No conversational text. No markdown backticks. 
+        self.PROMPT = """Only respond with the Python code. No text. No markdown.
         Define a function: def reward(pos, vel, action):
-        
         {goal}
         {trajectory}
         {param}
@@ -198,25 +193,29 @@ class ShapedReward(object):
 
         self.log_of_responses = []
         self.valid_code_history = ['None']
+        # New: attribute to store the last error for the next prompt
+        self.last_error = None 
         self.save_dir = save_dir
 
     def build_prompt(self, reward: float, failed: bool):
+        # Construct error explanation if a failure occurred
+        error_info = ""
+        if failed and self.last_error:
+            error_info = f"\n[CRITICAL ERROR FROM PREVIOUS ATTEMPT]:\n{self.last_error}\nFIX THIS ERROR!"
+
         prompt = self.PROMPT.format(
             goal=self.GOAL_PROMPT,
             param=self.PARAM_PROMPT,
             trajectory=self.TRAJECTORY.format(
                 code=self.valid_code_history[-1], 
-                reward=reward
+                reward=reward,
+                error_info=error_info
             ),
         )
-        if failed:
-            prompt = "The previous code failed to execute. Ensure valid Python syntax.\n" + prompt
         return prompt
 
     def generate_default_func(self):
-        """Default fallback reward function for MountainCar."""
         def reward(pos, vel, action):
-            # Basic potential-based reward: encourage moving away from the center
             return abs(vel) * 1.0
         return reward
 
@@ -227,12 +226,12 @@ class ShapedReward(object):
         code = None
         model_name = os.getenv("LLM_MODEL", "llama3.1")
 
-        for i in range(2):
+        for i in range(2): # Try twice (Self-Correction loop)
             try:
+                # build_prompt will now include self.last_error if failed is True
                 prompt = self.build_prompt(current_score, failed=failed)
                 
                 print(f"\n[LLM Request] Sending prompt to {model_name}...") 
-                
                 cost, code = query_llm.query_gpt(prompt, model=model_name)
                 code = self._clean_code(code)
                 
@@ -245,12 +244,21 @@ class ShapedReward(object):
 
                 ldict = {}
                 exec(code, globals(), ldict)
+                
                 if 'reward' in ldict:
+                    # --- PRESSURE TEST ---
+                    # Test run with action=0 to catch common LLM bugs (like 1/action) immediately
+                    ldict['reward'](-0.5, 0.0, 0)
+                    
+                    # If test passes:
                     self.valid_code_history.append(code)
+                    self.last_error = None # Clear error on success
                     return ldict['reward']
                 
-            except Exception as e:
-                print(f"❌ LLM Code Execution Error: {e}")
+            except Exception:
+                # Capture the full traceback to feed back to the LLM
+                self.last_error = traceback.format_exc()
+                print(f"❌ LLM Code Execution Error:\n{self.last_error}")
                 self.valid_code_history.append(f"failed: {code}")
                 failed = True
                 continue
@@ -258,7 +266,6 @@ class ShapedReward(object):
         return self.generate_default_func()
 
     def _clean_code(self, code_str):
-        """Removes markdown formatting often added by LLMs."""
         if "```" in code_str:
             code_str = re.sub(r"```python\n|```", "", code_str)
         return code_str.strip()
