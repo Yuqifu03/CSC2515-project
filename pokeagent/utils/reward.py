@@ -152,59 +152,65 @@ import os
 import re
 import traceback
 import logging
+import numpy as np
 
-# Ensure this matches your existing import style
+# Assuming your query_llm script handles the API calls
 import utils.query_llm as query_llm
 
 log = logging.getLogger(__name__)
 
 class ShapedReward(object):
     """
-    Class for generating shaped reward functions for MountainCar-v0.
+    Class for generating shaped reward functions for MountainCar-v0 using 
+    Continuous Potential-based Reward Shaping.
     """
 
     def __init__(self, save_dir: str = "./logs"):
+        # Enforce smooth energy-based functions and discourage 'if-else' jumps
         self.GOAL_PROMPT = """
-        [GOAL] You are an AI agent helping a car drive up a hill. 
-        Environment: MountainCar-v0. Target: Reach 0.5 position.
-        [HINT] Build momentum by swinging. Reward Total Energy (Potential + Kinetic).
+        [GOAL] Help a car reach 0.5 position in MountainCar-v0.
+        [STRATEGY] Your reward function will be applied at EVERY STEP for the next {freq} episodes.
+        It must be stable and consistent to allow the Q-table to converge over thousands of steps.
+        Avoid erratic reward jumps that confuse the agent's long-term value estimation.
+        Focus on Total Mechanical Energy (E = Potential + Kinetic) as a smooth potential field.
         """
         
         self.PARAM_PROMPT = """
-        [PARAMS] pos, vel, action. 
-        [PHYSICS] Energy = (pos + 0.5)^2 + 0.5 * vel^2.
-        [CONSTRAINT] Action is 0, 1, or 2. Do NOT divide by 'action' directly (prevents ZeroDivisionError).
+        [PARAMS] pos (float), vel (float), action (int: 0=left, 1=stay, 2=right). 
+        [PHYSICS] Equilibrium is at pos=-0.5. Goal is pos=0.5.
+        [MATH] You MUST use numpy (as np) for smooth functions like np.exp, np.sin, or np.tanh.
+        [CONSTRAINT] The final reward MUST be a float between -50 and 50. 
+        Do NOT divide by 'action'. Do NOT use large constants (e.g., >100).
         """
 
-        # Added {error_info} placeholder to the trajectory prompt
-        self.TRAJECTORY = """Your previous reward function was:
+        self.TRAJECTORY = """
+        Your previous reward function was:
         {code}
-        It resulted in a total episode reward of {reward}. 
+        It resulted in a total episode reward of {reward}.
         {error_info}
-        Improve this function!
+        Analyze why it failed to climb the hill and provide a smoother, better-scaled version.
         """
 
         self.PROMPT = """Only respond with the Python code. No text. No markdown.
-        Define a function: def reward(pos, vel, action):
+        Import numpy as np.
+        Define: def reward(pos, vel, action):
         {goal}
         {trajectory}
         {param}
         """
 
         self.log_of_responses = []
-        self.valid_code_history = ['None']
-        # New: attribute to store the last error for the next prompt
+        self.valid_code_history = ['def reward(pos, vel, action):\n    return 0.0']
         self.last_error = None 
         self.save_dir = save_dir
 
-    def build_prompt(self, reward: float, failed: bool):
-        # Construct error explanation if a failure occurred
+    def build_prompt(self, reward: float, failed: bool, freq: int, current_ep: int):
         error_info = ""
         if failed and self.last_error:
             error_info = f"\n[CRITICAL ERROR FROM PREVIOUS ATTEMPT]:\n{self.last_error}\nFIX THIS ERROR!"
 
         prompt = self.PROMPT.format(
-            goal=self.GOAL_PROMPT,
+            goal=self.GOAL_PROMPT.format(freq=freq),
             param=self.PARAM_PROMPT,
             trajectory=self.TRAJECTORY.format(
                 code=self.valid_code_history[-1], 
@@ -215,60 +221,62 @@ class ShapedReward(object):
         return prompt
 
     def generate_default_func(self):
+        """Fallback function if LLM fails twice."""
         def reward(pos, vel, action):
-            return abs(vel) * 1.0
+            # Basic energy-based potential
+            return (pos + 0.5) ** 2 + 10.0 * abs(vel)
         return reward
 
-    def generate_reward_func(self, trajectory_data):
+    def generate_reward_func(self, trajectory_data, freq: int, current_ep: int):
         current_score = sum([t[2] for t in trajectory_data]) if isinstance(trajectory_data, list) else 0.0
         
         failed = False
         code = None
-        model_name = os.getenv("LLM_MODEL", "llama3.1")
+        model_name = os.getenv("LLM_MODEL", "deepseek-coder-v2:16b")
+        backend = os.getenv("LLM_BACKEND", "ollama")
 
-        for i in range(2): # Try twice (Self-Correction loop)
+        for i in range(2): 
             try:
-                # build_prompt will now include self.last_error if failed is True
-                prompt = self.build_prompt(current_score, failed=failed)
-                
-                print(f"\n[LLM Request] Sending prompt to {model_name}...") 
-                cost, code = query_llm.query_gpt(prompt, model=model_name)
+                prompt = self.build_prompt(current_score, failed=failed, freq=freq, current_ep=current_ep)
+                cost, code = query_llm.query_gpt(prompt, model=model_name, backend=backend)
                 code = self._clean_code(code)
                 
-                print("\n" + "="*30)
-                print(f"NEW REWARD CODE GENERATED BY {model_name}:")
-                print(code)
-                print("="*30 + "\n")
-                
-                self.log_of_responses.append({"prompt": prompt, "code": code})
-
+                # Injection of necessary libraries into exec context
                 ldict = {}
-                exec(code, globals(), ldict)
+                safe_globals = {"np": np, "math": np, "abs": abs, "max": max, "min": min}
+                exec(code, safe_globals, ldict)
                 
                 if 'reward' in ldict:
-                    # --- PRESSURE TEST ---
-                    # Test run with action=0 to catch common LLM bugs (like 1/action) immediately
-                    ldict['reward'](-0.5, 0.0, 0)
+                    # Test run to catch runtime errors (e.g. 1/action)
+                    test_val = ldict['reward'](-0.5, 0.0, 0)
                     
-                    # If test passes:
+                    # Wrap the LLM function to ensure numerical stability
+                    raw_func = ldict['reward']
+                    
+                    def safe_reward_wrapper(p, v, a):
+                        try:
+                            r = raw_func(p, v, a)
+                            # CRITICAL: Clip to prevent Q-table saturation/overflow
+                            return float(np.clip(r, -50, 50))
+                        except:
+                            return 0.0
+
                     self.valid_code_history.append(code)
-                    self.last_error = None # Clear error on success
-                    return ldict['reward']
+                    self.last_error = None
+                    return safe_reward_wrapper
                 
             except Exception:
-                # Capture the full traceback to feed back to the LLM
                 self.last_error = traceback.format_exc()
-                print(f"❌ LLM Code Execution Error:\n{self.last_error}")
-                self.valid_code_history.append(f"failed: {code}")
+                log.error(f"LLM Code Execution Error:\n{self.last_error}")
                 failed = True
                 continue
 
         return self.generate_default_func()
 
     def _clean_code(self, code_str):
-        if "```" in code_str:
-            code_str = re.sub(r"```python\n|```", "", code_str)
+        code_str = re.sub(r"```python\n|```", "", code_str)
+        # Remove any leading/trailing prose the LLM might have included
+        match = re.search(r"def reward\(.*?\):.*", code_str, re.DOTALL)
+        if match:
+            return match.group(0).strip()
         return code_str.strip()
-
-    def dump(self):
-        print(self.log_of_responses)

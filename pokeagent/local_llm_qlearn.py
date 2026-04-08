@@ -26,14 +26,14 @@ def clean_llm_code(code_string):
 @hydra.main(version_base=None, config_path="./conf", config_name="config")
 def main(cfg: DictConfig) -> None:
     # --- 1. Global Settings ---
-    os.environ["OPENAI_API_BASE"] = cfg.get("llm_base_url", "http://localhost:11434/v1")
-    os.environ["OPENAI_API_KEY"] = "ollama" 
-    os.environ["LLM_MODEL"] = "deepseek-coder-v2:16b"
+    os.environ["OPENAI_API_BASE"] = cfg.get("llm_base_url", "https://camel.kr777.top/v1/")
+    # os.environ["OPENAI_API_KEY"] = "ollama" 
+    os.environ["LLM_MODEL"] = "claude-sonnet-4-5-20250929"
     
     # Study parameters
-    test_frequencies = [50, 75, 100, 125, 150, 175, 200] 
+    test_frequencies = [1000] 
     # num_seeds = 3  
-    seeds=[42, 100, 2026, 3030, 4040, 5050, 6060, 7070, 8080, 9999]                        
+    seeds=[42, 2026, 9999, 3030, 4040]                        
     episodes_per_run = 600
     
     # Data containers for the final local plot
@@ -78,7 +78,7 @@ def main(cfg: DictConfig) -> None:
             env = gym.make("MountainCar-v0", max_episode_steps=600)
             
             # Initialize Q-Table and logic fresh for each seed
-            DISCRETE_OBSERVATION_SPACE_SIZE = [20] * len(env.observation_space.high)
+            DISCRETE_OBSERVATION_SPACE_SIZE = [40] * len(env.observation_space.high)
             discrete_os_win_size = (env.observation_space.high - env.observation_space.low) / DISCRETE_OBSERVATION_SPACE_SIZE
             q_table = np.random.uniform(low=-2, high=0, size=(DISCRETE_OBSERVATION_SPACE_SIZE + [env.action_space.n]))
             
@@ -93,6 +93,7 @@ def main(cfg: DictConfig) -> None:
             current_reward_func = sr.generate_default_func()
             run_rewards = []
             run_llm_calls = 0
+            max_reward_observed = -float('inf')
 
             # --- Training Loop (Episodes) ---
             for ep in range(episodes_per_run):
@@ -154,10 +155,14 @@ def main(cfg: DictConfig) -> None:
                     episode_length += 1
 
                 run_rewards.append(sum_rewards)
+
+                if sum_rewards > max_reward_observed:
+                    max_reward_observed = sum_rewards
                 
                 # Log EVERY episode to WandB to see the learning curve
                 wandb.log({
                     "episode_reward": sum_rewards,
+                    "max_reward_so_far": max_reward_observed,
                     "episode_length": episode_length,
                     "epsilon": epsilon,
                     "episode": ep
@@ -167,7 +172,7 @@ def main(cfg: DictConfig) -> None:
                 if ep % freq == 0 and ep != 0:
                     run_llm_calls += 1
                     try:
-                        new_func = sr.generate_reward_func(traj)
+                        new_func = sr.generate_reward_func(traj, freq=freq, current_ep=ep)
                         if callable(new_func):
                             current_reward_func = new_func
                     except Exception:
@@ -190,6 +195,7 @@ def main(cfg: DictConfig) -> None:
                 "frequency": freq,
                 "seed": current_seed,
                 "avg_reward_last_50": last_50_avg,
+                "max_episode_reward": max_reward_observed,
                 "llm_calls": total_calls_for_this_freq,
                 "model": os.environ.get("LLM_MODEL", "unknown")
             }
