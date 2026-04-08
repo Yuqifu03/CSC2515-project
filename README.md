@@ -22,15 +22,7 @@ For plotting, refer to:
 data_analysis.py
 ```
 
-
-
 # LLM Frequency
-
-## Local LLM Configuration
-
-We use a locally deployed language model for feedback generation:
-
-- Model: ```deepseek-coder-v2:16b```
 
 ## Setup & Execution
 Before running the experiment, make sure you are logged into Weights & Biases:
